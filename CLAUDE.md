@@ -4,485 +4,352 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**ComfyUI** is a visual AI engine and application that uses a graph/nodes/flowchart interface for building complex AI pipelines. It supports multiple model types (image generation, video, audio, 3D) and executes workflows through an asynchronous queue system with intelligent caching and memory management.
+This is a **ComfyUI integration project** that adds enterprise-grade features to ComfyUI through custom middleware and utilities. The project provides:
+
+1. **JWT Authentication** - Token-based API authentication
+2. **API Documentation** - OpenAPI/Swagger specification generation
+3. **Enhanced Logging** - Structured JSON logging with rotation
+
+This is **NOT** the main ComfyUI repository. This is a wrapper/integration layer that should be used alongside ComfyUI.
 
 ### Key Technologies
-- **Python 3.9+**: Core implementation, Python 3.13 strongly recommended
-- **PyTorch**: ML framework with support for NVIDIA, AMD, Intel, and Apple Silicon GPUs
-- **aiohttp**: Async web server for REST API and WebSocket communication
-- **SQLAlchemy**: Database ORM with Alembic migrations
-- **Pydantic**: Data validation with version 2.0+
-- **PIL**: Image processing
-- **transformers**: For text encoding and model loading
+- **Python 3.9+** - Core implementation
+- **aiohttp** - Async web framework (ComfyUI's server framework)
+- **PyJWT** - JWT token generation and validation
+- **SQLAlchemy + Alembic** - Database ORM and migrations
+- **Pydantic ~2.0** - Data validation
 
-## Architecture Overview
+## Repository Structure
 
-### Core System Structure
-
-**comfy/** - Core AI/ML engine
-- `model_management.py`: GPU memory management, model loading/unloading with smart offloading
-- `model_sampling.py`: Sampling algorithms and diffusion logic
-- `clip_model.py`, `clip_vision.py`: Text and image encoding models
-- `latent_formats.py`, `sample.py`: Latent manipulation and sampling
-- `ops.py`: PyTorch operations with device placement logic
-- **ldm/**: Latent diffusion models (SD1.x, SDXL, Flux, HunyuanDiT, Cascade, etc.)
-- **k_diffusion/**: Advanced samplers (DEIS, SA Solver, Uni-PC)
-- **weight_adapter/**: LoRA, LoHa, LoKr, BOFT implementation
-
-**comfy_api/** - Public API layer with versioning
-- **latest/**: Current stable API (io.py for type definitions)
-- `v0_0_1/`, `v0_0_2/`: Legacy API versions
-- **internal/**: Private node registration and metadata (`_ComfyNodeInternal`)
-- `feature_flags.py`: Feature gating mechanism
-- `input/`, `input_impl/`: Type system for node I/O
-
-**comfy_execution/** - Execution engine
-- `caching.py`: Three-tier cache (BasicCache, HierarchicalCache, LRUCache) for avoiding redundant calculations
-- `graph_utils.py`: Graph validation, linking, and execution order
-- `validation.py`: Node input type checking
-- `progress.py`: Progress tracking and isolation per execution
-
-**comfy_extras/** - Built-in node implementations
-- 70+ node files (samplers, model loading, image processing, audio, video)
-- Each file defines nodes for specific functionality (e.g., `nodes_controlnet.py`, `nodes_flux.py`)
-
-**comfy_api_nodes/** - Public node API definitions
-- `apis/`: Define public-facing node interfaces
-- `util/`: Helper functions for node development
-- Separate from implementation, allows version control of node contracts
-
-**api_server/** - HTTP API routes
-- `routes/`: REST endpoints for execution, node info, etc.
-- Follows standard REST patterns with WebSocket for real-time updates
-
-**app/** - Application management
-- `frontend_management.py`: Frontend versioning and serving
-- `custom_node_manager.py`: Custom node discovery and lifecycle
-- `model_manager.py`: Model file management
-- `user_manager.py`: User authentication and management
-- `subgraph_manager.py`: Nested workflow/subgraph management
-- `logger.py`: Structured logging configuration (prefer this over print statements)
-- `app_settings.py`: Application configuration
-- `database/`: SQLAlchemy models and migrations (alembic_db/)
-
-### Execution Flow
-
-1. **Node Registration**: Nodes are registered via `@node_registry` or `@latest.node()` in Python
-2. **Graph Building**: Frontend sends JSON workflow → `Graph` validates → prepares execution
-3. **Execution Context**: Each execution isolated with `ExecutingContext` for safety (see `comfy_execution/utils.py`)
-4. **Execution**: `Executor` processes nodes in order, managing GPU memory and caching
-5. **Caching Strategy**: Uses input signature or node ID via `caching.py` to avoid redundant execution
-6. **Progress Tracking**: Per-execution progress state with WebSocket updates (isolated per `ExecutingContext`)
-7. **Async-First**: Entire system is async/await; all I/O operations are non-blocking
-
-### Node System
-
-Nodes are Python classes with:
-- `INPUT_TYPES`: Dict defining input parameters and types
-- `RETURN_TYPES`: Tuple of output type names
-- `FUNCTION`: Method name to execute
-- Class method that implements the logic
-
-Example pattern:
-```python
-class MyNode:
-    INPUT_TYPES = {
-        "required": {
-            "input": ("IMAGE",),
-        }
-    }
-    RETURN_TYPES = ("IMAGE",)
-    FUNCTION = "execute"
-
-    def execute(self, input):
-        # Process input
-        return (output,)
+```
+.
+├── api_server/
+│   └── openapi_spec.py          # OpenAPI 3.0 specification generator
+├── app/
+│   └── enhanced_logger.py       # Structured logging with JSON output
+├── middleware/
+│   └── auth_middleware.py       # JWT authentication middleware
+├── web/                         # Git submodule: ComfyUI_frontend
+├── requirements.txt             # Python dependencies
+└── pyproject.toml              # Project metadata and tool config
 ```
 
 ## Common Development Commands
 
-### Running ComfyUI
-```bash
-# Basic execution (requires GPU or --cpu flag)
-python main.py
-
-# With custom model paths
-python main.py --extra-model-paths-config extra_model_paths.yaml
-
-# Development with hot-reload (some parameters)
-python main.py --listen 0.0.0.0 --port 8188
-
-# CPU-only mode (very slow, for testing)
-python main.py --cpu
-
-# Enable high-quality TAESD previews
-python main.py --preview-method taesd
-
-# Enable verbose logging for debugging
-python main.py --verbose
-
-# Check available model paths
-python main.py --list-model-paths
-```
-
-### Setting Up Development
+### Setup
 
 ```bash
-# Install core dependencies
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
 
-# Install unit test dependencies
-pip install -r tests-unit/requirements.txt
-
-# Install integration test dependencies (for inference tests)
-pip install pytest websocket-client==1.6.1 opencv-python==4.6.0.66 scikit-image==0.21.0
-
-# For linting (ruff is configured in pyproject.toml)
-pip install ruff
-```
-
-### Running Tests
-
-```bash
-# Unit tests (fast, no GPU needed)
-pytest tests-unit/
-
-# Run specific test file
-pytest tests-unit/comfy_test/folder_path_test.py
-
-# Run specific test
-pytest tests-unit/comfy_test/folder_path_test.py::test_specific_test
-
-# Integration tests (slower, may need GPU)
-pytest tests/execution/
-
-# Inference quality tests (requires models)
-pytest tests/inference/
-
-# Generate baseline for quality regression
-pytest tests/inference --output_dir tests/inference/baseline
-
-# Run with coverage
-pytest tests-unit/ --cov=. --cov-report=term-only
+# Install additional dependencies for auth
+pip install PyJWT
 ```
 
 ### Code Quality
 
 ```bash
-# Linting (ruff is the primary linter)
-ruff check . --select E,F,W
+# Linting (ruff is configured in pyproject.toml)
+ruff check .
 
-# Format code (ruff can auto-fix many issues)
+# Auto-fix issues
 ruff check . --fix
 
-# Check for print statements (T rule - development should use logging)
-ruff check . --select T
-
-# pylint for additional checks
-pylint <file_or_module>
+# Check specific rules
+ruff check . --select E,F,W  # PEP 8 + Pyflakes
+ruff check . --select T      # Print statement detection
 ```
 
-## Testing Strategy
+### Testing
 
-### Unit Tests (tests-unit/)
-- Fast, no external dependencies
-- Test individual functions and modules
-- Located in `tests-unit/` mirroring source structure
-- Use pytest fixtures for common setup
+Currently no automated tests exist. When adding tests:
 
-### Integration/Execution Tests (tests/execution/)
-- Test node execution and graph evaluation
-- Use `testing-pack/` custom nodes for test scenarios
-- Test async execution, caching, progress isolation
-- Slower but validate real behavior
-
-### Inference Tests (tests/inference/)
-- Quality regression testing
-- Compares generated images against baseline
-- Requires GPU and models
-- Use with `--output_dir` to generate new baselines
-
-### Test Patterns
-- Use `conftest.py` for shared fixtures
-- Mock GPU operations with CPU fallback in unit tests
-- Isolate progress state per execution context
-- Validate node input/output types
-
-## Code Organization Standards
-
-### File Naming
-- Core modules: `snake_case.py` (e.g., `model_management.py`)
-- Node files: `nodes_<feature>.py` (e.g., `nodes_controlnet.py`)
-- Test files: `test_<module>.py` or `<module>_test.py`
-
-### Package Organization
-- **By domain**: Model loading, sampling, nodes, API routes
-- **No mixed concerns**: Keep model code separate from API code
-- **Version compatibility**: Legacy APIs in versioned directories
-- **Execution isolation**: Each execution has its own context via `ExecutingContext`
-
-### Import Patterns
-- Relative imports within packages: `from .utils import helper`
-- Absolute imports from root: `import comfy.model_management`
-- Node imports: `import nodes` (central node registry)
-- Logging imports: `from app.logger import setup_logger` (use structured logging, not print statements)
-
-### Async Patterns
-- All HTTP handlers are `async def` (uses `aiohttp`)
-- Node execution functions can be sync or async
-- Use `await` when calling async functions
-- WebSocket communication is event-driven; subscribe to events from `server.py`
-
-## Database and Migrations
-
-### Alembic Setup
 ```bash
-# Create new migration after changing models in app/database/models.py
-alembic revision --autogenerate -m "description"
+# Install pytest
+pip install pytest pytest-asyncio pytest-aiohttp
 
-# Apply migrations
-alembic upgrade head
+# Run tests
+pytest tests/
 
-# View migration history
-alembic history
+# Run with coverage
+pytest tests/ --cov=. --cov-report=term-missing
 ```
 
-### Database Models
-Located in `app/database/models.py` using SQLAlchemy ORM. Migrations use Alembic. Database choice can vary (SQLite default, but supports others).
+## Module Documentation
 
-## Custom Node Development
+### 1. Authentication Middleware (`middleware/auth_middleware.py`)
 
-### Basic Node Structure
+JWT-based authentication for aiohttp applications.
+
+**Key Components:**
+- `AuthConfig` - Configuration for authentication settings
+- `AuthManager` - Token generation and validation
+- `AuthMiddleware` - aiohttp middleware for request authentication
+- `setup_auth_routes()` - Adds `/api/auth/login` and `/api/auth/logout` endpoints
+- `@require_auth` decorator - Protects individual route handlers
+
+**Integration Example:**
 ```python
-from comfy_api.latest import io
+from aiohttp import web
+from middleware.auth_middleware import AuthMiddleware, setup_auth_routes
 
-@io.node(
-    title="My Custom Node",
-    category="image/processing",
-    description="Does something to images"
+app = web.Application()
+
+# Initialize auth middleware
+auth = AuthMiddleware(
+    public_paths=['/health', '/api/auth/login']
 )
-class MyCustomNode:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "image": ("IMAGE",),
-                "strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 2.0})
-            }
-        }
+app.middlewares.append(auth.middleware_handler)
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("result",)
-    FUNCTION = "execute"
-
-    def execute(self, image, strength):
-        # Implementation here
-        return (result,)
-
-NODE_CLASS_MAPPINGS = {"MyCustomNode": MyCustomNode}
-NODE_DISPLAY_NAMES = {"MyCustomNode": "My Custom Node"}
+# Add auth routes
+setup_auth_routes(app, auth)
 ```
 
-### Node Categories
-Common categories: `image/processing`, `image/generation`, `loaders`, `conditioning`, `model_merge`, `video`, `audio`, `sampling`, `advanced`
-
-### Type System
-Basic types: `IMAGE`, `CONDITIONING`, `MODEL`, `CLIP`, `VAE`, `LATENT`, `FLOAT`, `INT`, `STRING`
-Custom types can be defined as tuples of allowed values.
-
-## API and Frontend
-
-### API Architecture
-- **WebSocket**: Real-time updates (queue status, progress, results)
-- **REST**: File uploads, model info, node schemas
-- **Binary Protocol**: Optimized image transfer via WebSocket
-
-### Frontend Communication
-Frontend is in separate repository: [ComfyUI_frontend](https://github.com/Comfy-Org/ComfyUI_frontend)
-- Weekly updates merged into core
-- Use `--front-end-version` flag to use specific versions
-
-### Key API Endpoints
-- `/api/nodes`: Get node schema and info
-- `/api/prompt`: Submit workflow execution
-- `/api/history`: Get execution results
-- `/api/interrupt`: Cancel execution
-- `/api/queue`: Get/manage execution queue
-
-## Performance Considerations
-
-### Memory Management
-- `model_management.py` handles GPU memory with smart offloading
-- Models are unloaded when not in use to maximize VRAM efficiency
-- Supports low-VRAM mode with `--normalvram`, `--lowvram`, `--cpu-vram`
-
-### Execution Optimization
-- Only parts of graph with changes execute (smart caching)
-- Input signature caching prevents redundant node execution
-- Async queue allows multiple submissions while processing
-
-### Model Loading
-- Models cached in memory once loaded
-- Checkpoint format validation prevents corruption
-- Custom model paths support via `extra_model_paths.yaml`
-
-## Debugging
-
-### Enable Verbose Logging
+**Usage:**
 ```bash
-python main.py --verbose
+# Login
+curl -X POST http://localhost:8188/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "user", "password": "pass"}'
+
+# Use token
+curl http://localhost:8188/api/protected \
+  -H "Authorization: Bearer <token>"
 ```
 
-### Check Model Paths
+### 2. OpenAPI Specification (`api_server/openapi_spec.py`)
+
+Generates OpenAPI 3.0 documentation for the API.
+
+**Key Functions:**
+- `get_openapi_spec()` - Returns OpenAPI spec dictionary
+- `setup_openapi_routes()` - Adds `/api/docs`, `/api/redoc`, `/api/openapi.json`
+
+**Integration Example:**
+```python
+from api_server.openapi_spec import setup_openapi_routes
+
+# Add documentation routes
+setup_openapi_routes(app)
+
+# Access:
+# - Swagger UI: http://localhost:8188/api/docs
+# - ReDoc:      http://localhost:8188/api/redoc
+# - JSON spec:  http://localhost:8188/api/openapi.json
+```
+
+### 3. Enhanced Logger (`app/enhanced_logger.py`)
+
+Structured logging with JSON output and file rotation.
+
+**Key Components:**
+- `JSONFormatter` - Formats logs as JSON
+- `ColoredFormatter` - Colored console output
+- `setup_enhanced_logger()` - Configures logger with multiple handlers
+- `LogContext` - Context manager for operation tracking
+- `MetricsLogger` - Performance metrics tracking
+
+**Usage Example:**
+```python
+from app.enhanced_logger import setup_enhanced_logger
+import logging
+
+logger = setup_enhanced_logger(
+    name="myapp",
+    level=logging.INFO,
+    log_file="/var/log/myapp/app.log",
+    json_output=True
+)
+
+logger.info("Server started", extra={
+    "port": 8188,
+    "mode": "production"
+})
+```
+
+## Integration with ComfyUI
+
+To integrate these modules with a ComfyUI installation:
+
+1. **Install ComfyUI separately** or add as submodule
+2. **Import and use these modules** in ComfyUI's `server.py`
+3. **Configure authentication** to protect API endpoints
+4. **Add API documentation** for custom nodes
+
+Example integration in ComfyUI's server:
+
+```python
+# In ComfyUI's server.py
+from middleware.auth_middleware import AuthMiddleware, setup_auth_routes
+from api_server.openapi_spec import setup_openapi_routes
+from app.enhanced_logger import setup_enhanced_logger
+
+# Setup logging
+logger = setup_enhanced_logger("comfyui")
+
+# Add authentication
+auth = AuthMiddleware(public_paths=['/'])
+app.middlewares.append(auth.middleware_handler)
+setup_auth_routes(app, auth)
+
+# Add API documentation
+setup_openapi_routes(app)
+```
+
+## Development Patterns
+
+### Async/Await
+All aiohttp handlers must be async:
+```python
+async def my_handler(request):
+    return web.json_response({"status": "ok"})
+```
+
+### Error Handling
+Return proper HTTP status codes:
+```python
+try:
+    result = await process_request(request)
+    return web.json_response(result)
+except ValueError as e:
+    return web.json_response(
+        {"error": str(e)},
+        status=400
+    )
+except Exception as e:
+    logger.error("Unexpected error", exc_info=True)
+    return web.json_response(
+        {"error": "Internal server error"},
+        status=500
+    )
+```
+
+### Logging Best Practices
+Use structured logging instead of print statements:
+```python
+# Bad
+print(f"User {user_id} logged in")
+
+# Good
+logger.info("User logged in", extra={"user_id": user_id})
+```
+
+## Security Considerations
+
+### Authentication
+- **Secret Key**: Set via environment variable in production
+- **Token Expiry**: Configure appropriate expiry times (default: 24 hours)
+- **HTTPS**: Always use HTTPS in production
+- **Password Hashing**: Implement proper password hashing (not included in current implementation)
+
+### API Security
+- **CORS**: Configure CORS policies appropriately
+- **Rate Limiting**: Add rate limiting for public endpoints
+- **Input Validation**: Validate all user inputs
+- **SQL Injection**: Use parameterized queries with SQLAlchemy
+
+## Configuration
+
+### Environment Variables
+Recommended environment variables for production:
+
 ```bash
-python main.py --list-model-paths
+# Authentication
+AUTH_SECRET_KEY=<secure-random-key>
+AUTH_TOKEN_EXPIRY_HOURS=24
+AUTH_REQUIRE_AUTH=true
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FILE=/var/log/comfyui/app.log
+LOG_JSON_OUTPUT=true
+
+# Server
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8188
 ```
 
-### Common Issues
+### pyproject.toml
+Ruff linting is configured with rules:
+- `E`, `F`, `W` - PEP 8 errors, Pyflakes, warnings
+- `N805` - Invalid method argument names
+- `S307`, `S102` - Security warnings for eval/exec
+- `T` - Print statement detection
 
-1. **Torch CUDA not available**: Uninstall torch and reinstall with correct index
-   ```bash
-   pip uninstall torch && pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
-   ```
+Pylint has many rules disabled for flexibility. See `pyproject.toml` for full list.
 
-2. **Out of VRAM**: Use lower VRAM mode
-   ```bash
-   python main.py --lowvram  # Unload between operations
-   python main.py --cpu-vram # Use CPU for non-GPU operations
-   ```
+## Dependencies
 
-3. **Missing models**: Check `models/` directory structure and `extra_model_paths.yaml`
+### Core Dependencies
+- `aiohttp>=3.10.0,<3.11.0` - Web framework
+- `PyJWT` - JWT token handling
+- `pydantic~=2.0` - Data validation
+- `SQLAlchemy` - Database ORM
+- `alembic` - Database migrations
+
+### Optional Dependencies
+- `pytest` - Testing framework
+- `pytest-asyncio` - Async test support
+- `pytest-aiohttp` - aiohttp test utilities
+- `ruff` - Linting and formatting
 
 ## Git Workflow
 
-**Default Branch**: `master`
+- **Main Branch**: `master`
+- **Submodules**: ComfyUI_frontend in `web/` directory
 
-### Branch Naming
-- Features: `feature/description`
-- Fixes: `fix/description`
-- Never commit directly to `master`
+### Submodule Management
+```bash
+# Initialize submodules
+git submodule update --init --recursive
 
-### Pull Request Process
-- Reference issue numbers: `Fixes #123`
-- Include test coverage
-- Pass all CI checks (unit tests, ruff linting)
+# Update submodules
+git submodule update --remote
 
-## Release Process
-
-ComfyUI follows a **weekly release cycle** (typically Friday):
-1. **ComfyUI Core** releases stable version
-2. **Desktop** builds using latest stable core
-3. **Frontend** weekly updates frozen for release, development continues next cycle
-
-Three interconnected repos:
-- [ComfyUI Core](https://github.com/comfyanonymous/ComfyUI)
-- [ComfyUI Desktop](https://github.com/Comfy-Org/desktop)
-- [ComfyUI Frontend](https://github.com/Comfy-Org/ComfyUI_frontend)
-
-## Documentation Resources
-
-- **Official Docs**: https://docs.comfy.org/
-- **Examples**: https://comfyanonymous.github.io/ComfyUI_examples/
-- **Discord**: https://comfy.org/discord
-- **Matrix**: https://app.element.io/#/room/%23comfyui_space%3Amatrix.org
-- **Contributing Guide**: See `CONTRIBUTING.md`
-
-## Key Files to Know
-
-| File | Purpose |
-|------|---------|
-| `main.py` | Entry point, initializes paths and custom nodes; loads CLI args and setup |
-| `server.py` | aiohttp web server, WebSocket handling, event system |
-| `execution.py` | Core execution engine at root level (distinction from `comfy_execution/`) |
-| `nodes.py` | Central node registry (99KB of built-in nodes) |
-| `folder_paths.py` | Directory management for models and outputs |
-| `comfy_execution/graph.py` | Graph structure and validation |
-| `comfy_execution/caching.py` | Three-tier caching system |
-| `comfy_execution/progress.py` | Progress tracking with execution isolation |
-| `comfy_execution/utils.py` | Execution context management (`ExecutingContext`) |
-| `app/database/models.py` | SQLAlchemy ORM definitions |
-| `app/logger.py` | Structured logging setup |
-| `comfy/model_management.py` | GPU/memory management and model loading |
-| `comfy/cli_args.py` | CLI argument parsing and default configurations |
-| `comfy_api/latest/__init__.py` | Public API decorators (`@node()`) |
-| `comfy_api/feature_flags.py` | Feature gating for experimental features |
-| `comfy_extras/nodes_*.py` | Built-in node implementations |
-| `middleware/cache_middleware.py` | HTTP cache control middleware |
-
-## Python Version Compatibility
-
-- **Minimum**: Python 3.9
-- **Recommended**: Python 3.13
-- **3.14**: Works with kornia dependency commented out (breaks canny node)
-- **Custom node issues**: Try Python 3.12 if 3.13 dependencies fail
-
-## Linting and Code Standards
-
-**Tool**: Ruff (configured in `pyproject.toml`)
-
-Enabled rules:
-- `E`: PEP 8 errors
-- `F`: Pyflakes (undefined names, syntax errors)
-- `W`: PEP 8 warnings
-- `N805`: Invalid method argument names
-- `S307`: Eval usage warning
-- `S102`: Exec usage warning
-- `T`: Print statement detection (use logging instead)
-
-Disabled rules in pylint: Over 30+ rules disabled for flexibility (line length, docstrings, etc.)
-
-## Contributing Notes
-
-- Check [Discord](https://comfy.org/discord) #help or #feedback for questions
-- See [contributing guide](https://github.com/comfyanonymous/ComfyUI/wiki/How-to-Contribute-Code) for PR process
-- Search existing issues before creating new ones
-- Use reactions (+1/-1) instead of "+1" comments on issues
-
-## Important Development Patterns
-
-### Execution Isolation
-Each execution must use `ExecutingContext` to prevent cross-execution state pollution. Access via:
-```python
-from comfy_execution.utils import get_executing_context
-context = get_executing_context()
+# Pull with submodules
+git pull --recurse-submodules
 ```
 
-### Logging Instead of Print
-Use structured logging from `app.logger` instead of print statements:
-```python
-import logging
-logger = logging.getLogger(__name__)
-logger.info("Message with context", extra={"key": "value"})
-```
+## Future Enhancements
 
-### Type Validation
-Node inputs are validated via `comfy_execution/validation.py`. Define INPUT_TYPES carefully:
-```python
-INPUT_TYPES = {
-    "required": {
-        "param": ("TYPE_NAME",),  # Tuple with type name
-        "number": ("INT", {"default": 0, "min": 0, "max": 100})
-    },
-    "optional": {
-        "extra": ("STRING", {"default": ""})
-    }
-}
-```
+Potential improvements to consider:
 
-### Nested Workflows
-Use `SubgraphManager` (in `app/subgraph_manager.py`) for workflow composition and reuse. Allows workflows to contain other workflows as nodes.
+1. **Database Integration**
+   - User management tables
+   - Session storage
+   - Audit logging
 
-### Feature Flags
-Check `comfy_api/feature_flags.py` before implementing experimental features. Use flags to gate functionality during development:
-```python
-from comfy_api import feature_flags
-if feature_flags.get_flag("experimental_feature"):
-    # New behavior
-```
+2. **Additional Middleware**
+   - Rate limiting
+   - Request caching
+   - CORS handling
 
-### WebSocket Events
-Subscribe to WebSocket events from `server.py` for real-time updates. Common events:
-- `execution_start`: Workflow execution began
-- `execution_progress`: Step progress update
-- `execution_error`: Execution failed
-- `execution_cached`: Results loaded from cache
+3. **Testing**
+   - Unit tests for each module
+   - Integration tests with aiohttp
+   - Security testing
+
+4. **Monitoring**
+   - Prometheus metrics
+   - Health check endpoints
+   - Performance dashboards
+
+## Related Projects
+
+- **ComfyUI Core**: https://github.com/comfyanonymous/ComfyUI
+- **ComfyUI Frontend**: https://github.com/Comfy-Org/ComfyUI_frontend
+- **ComfyUI Desktop**: https://github.com/Comfy-Org/desktop
+
+## Documentation
+
+For ComfyUI-specific documentation, see:
+- https://docs.comfy.org/
+- https://github.com/comfyanonymous/ComfyUI/wiki
+
+For module-specific implementation details, see:
+- `IMPLEMENTATION_GUIDE.md` - Detailed integration instructions
+- `PROJECT_ANALYSIS.md` - Project analysis and architecture
